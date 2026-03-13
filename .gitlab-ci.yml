@@ -1,0 +1,144 @@
+# stages:
+#   - validate
+#   - build
+#   - deploy
+
+# variables:
+#   AWS_REGION: "ap-south-1"
+#   TF_ROOT: "my-flask-project/terraform"
+#   APP_ROOT: "my-flask-project/app"
+#   TF_IN_AUTOMATION: "true"
+#   TF_INPUT: "false"
+#   DOCKER_TLS_CERTDIR: "/certs"
+#   DOCKER_HOST: "tcp://docker:2376"
+#   DOCKER_TLS_VERIFY: "1"
+#   DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+#   ECR_REPOSITORY: "flask-ecs-dev"
+#   ECS_CLUSTER: "flask-ecs-dev-cluster"
+#   ECS_SERVICE: "flask-ecs-dev-service"
+#   TASK_FAMILY: "flask-ecs-dev-task"
+#   CONTAINER_NAME: "flask-app"
+
+# terraform_validate:
+#   stage: validate
+#   image:
+#     name: hashicorp/terraform:1.11.0
+#     entrypoint: [""]
+#   script:
+#     - cd "$TF_ROOT"
+#     - terraform init -backend=false
+#     - terraform fmt -check -recursive
+#     - terraform validate
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+#     - if: '$CI_COMMIT_BRANCH'
+
+# docker_build_push:
+#   stage: build
+#   image: docker:24.0.7
+#   services:
+#     - name: docker:24.0.7-dind
+#   before_script:
+#     - apk add --no-cache aws-cli
+#     - export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+#     - export ECR_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY"
+#     - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+#   script:
+#     - cd "$APP_ROOT"
+#     - export IMAGE_TAG="${CI_COMMIT_SHORT_SHA}"
+#     - docker build -t "$ECR_REPOSITORY:$IMAGE_TAG" .
+#     - docker tag "$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_URI:$IMAGE_TAG"
+#     - docker tag "$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_URI:latest"
+#     - docker push "$ECR_URI:$IMAGE_TAG"
+#     - docker push "$ECR_URI:latest"
+#     - printf "IMAGE_TAG=%s\nECR_URI=%s\n" "$IMAGE_TAG" "$ECR_URI" > ../build.env
+#   artifacts:
+#     reports:
+#       dotenv: my-flask-project/build.env
+#   rules:
+#     - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ecs_deploy:
+#   stage: deploy
+#   image: python:3.11-alpine
+#   needs:
+#     - job: docker_build_push
+#       artifacts: true
+#   before_script:
+#     - pip install --no-cache-dir awscli
+#   script:
+#     - |
+#       python <<'PY'
+#       import json
+#       import os
+#       import subprocess
+
+#       region = os.environ["AWS_REGION"]
+#       cluster = os.environ["ECS_CLUSTER"]
+#       service = os.environ["ECS_SERVICE"]
+#       task_family = os.environ["TASK_FAMILY"]
+#       container_name = os.environ["CONTAINER_NAME"]
+#       ecr_uri = os.environ["ECR_URI"]
+#       image_tag = os.environ["IMAGE_TAG"]
+#       new_image = f"{ecr_uri}:{image_tag}"
+
+#       def run(cmd):
+#         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+#         return result.stdout
+
+#       task_definition = json.loads(run([
+#         "aws", "ecs", "describe-task-definition",
+#         "--region", region,
+#         "--task-definition", task_family,
+#         "--query", "taskDefinition",
+#         "--output", "json",
+#       ]))
+
+#       for container in task_definition["containerDefinitions"]:
+#         if container["name"] == container_name:
+#           container["image"] = new_image
+
+#       for field in [
+#         "taskDefinitionArn",
+#         "revision",
+#         "status",
+#         "requiresAttributes",
+#         "compatibilities",
+#         "registeredAt",
+#         "registeredBy",
+#         "deregisteredAt",
+#       ]:
+#         task_definition.pop(field, None)
+
+#       with open("task-definition.json", "w", encoding="utf-8") as fh:
+#         json.dump(task_definition, fh)
+
+#       new_task_definition_arn = run([
+#         "aws", "ecs", "register-task-definition",
+#         "--region", region,
+#         "--cli-input-json", "file://task-definition.json",
+#         "--query", "taskDefinition.taskDefinitionArn",
+#         "--output", "text",
+#       ]).strip()
+
+#       run([
+#         "aws", "ecs", "update-service",
+#         "--region", region,
+#         "--cluster", cluster,
+#         "--service", service,
+#         "--task-definition", new_task_definition_arn,
+#       ])
+
+#       run([
+#         "aws", "ecs", "wait", "services-stable",
+#         "--region", region,
+#         "--cluster", cluster,
+#         "--services", service,
+#       ])
+
+#       print(f"Deployment successful: {new_task_definition_arn}")
+#       PY
+#   environment:
+#     name: production
+#   rules:
+#     - if: '$CI_COMMIT_BRANCH == "main"'

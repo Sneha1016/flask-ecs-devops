@@ -1,0 +1,13 @@
+aws_region          = "ap-south-1"
+project_name        = "flask-ecs"
+environment         = "dev"
+vpc_cidr            = "10.0.0.0/16"
+public_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]
+container_name      = "flask-app"
+container_port      = 5000
+health_check_path   = "/health"
+ecs_cpu             = 256
+ecs_memory          = 512
+desired_count       = 1
+image_tag           = "latest"
+log_retention_days  = 7
