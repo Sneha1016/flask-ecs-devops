@@ -1,0 +1,14 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECR Repository for Flask ECS Project
+
+Resources:
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: flask-ecs-dev
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+Outputs:
+  RepositoryURI:
+    Value: !GetAtt ECRRepository.RepositoryUri
