@@ -10,7 +10,7 @@ pipeline {
 
     parameters {
         booleanParam(name: 'APPLY_TERRAFORM', defaultValue: false, description: 'Apply Terraform before building and deploying.')
-        string(name: 'IMAGE_TAG_OVERRIDE', defaultValue: '', description: 'Optional image tag. Leave empty to use BUILD_NUMBER-GIT_SHA.')
+        string(name: 'IMAGE_TAG_OVERRIDE', defaultValue: '', description: 'Optional image tag.')
     }
 
     environment {
@@ -24,6 +24,7 @@ pipeline {
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -58,16 +59,37 @@ pipeline {
             }
         }
 
-        stage('Terraform Apply') {
-            when {
-                expression { return params.APPLY_TERRAFORM }
-            }
+        // ❌ DISABLED TERRAFORM APPLY
+        // stage('Terraform Apply') {
+        //     when {
+        //         expression { return params.APPLY_TERRAFORM }
+        //     }
+        //     steps {
+        //         withAWS(credentials: 'aws-credentials', region: env.AWS_REGION) {
+        //             dir(env.TF_ROOT) {
+        //                 sh 'terraform init'
+        //                 sh 'bash ../../scripts/import-existing-terraform-resources.sh .'
+        //                 sh "terraform apply -auto-approve -var=image_tag=latest"
+        //             }
+        //         }
+        //     }
+        // }
+
+        // ✅ NEW CLOUD FORMATION STAGE
+        stage('CloudFormation Deploy') {
             steps {
                 withAWS(credentials: 'aws-credentials', region: env.AWS_REGION) {
-                    dir(env.TF_ROOT) {
-                        sh 'terraform init'
-                        sh 'bash ../../scripts/import-existing-terraform-resources.sh .'
-                        sh "terraform apply -auto-approve -var=image_tag=latest"
+                    dir('cloudformation') {
+                        sh '''
+                        echo "=== Deploying ECR using CloudFormation ==="
+
+                        aws cloudformation deploy \
+                          --template-file ecr.yaml \
+                          --stack-name flask-ecr-stack \
+                          --region ${AWS_REGION}
+
+                        echo "=== CloudFormation Deploy Complete ==="
+                        '''
                     }
                 }
             }
@@ -184,11 +206,6 @@ pipeline {
     post {
         always {
             sh 'rm -f task-definition.json task-definition-updated.json || true'
-            sh '''
-                docker image inspect "${ECR_REPOSITORY}:${IMAGE_TAG}" >/dev/null 2>&1 && docker image rm "${ECR_REPOSITORY}:${IMAGE_TAG}" || true
-                [ -n "${ECR_IMAGE}" ] && docker image inspect "${ECR_IMAGE}" >/dev/null 2>&1 && docker image rm "${ECR_IMAGE}" || true
-                [ -n "${ECR_IMAGE_LATEST}" ] && docker image inspect "${ECR_IMAGE_LATEST}" >/dev/null 2>&1 && docker image rm "${ECR_IMAGE_LATEST}" || true
-            '''
         }
     }
 }
